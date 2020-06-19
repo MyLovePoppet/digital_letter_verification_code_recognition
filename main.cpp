@@ -38,40 +38,57 @@ void noiseReduction(Mat &img, int k = 4) {
     }
 }
 
+//最小外接矩形算法
+std::vector<Mat> SplitLetterAndDigit(Mat &src) {
+    Mat mat = src.clone();
+    blur(mat, mat, Size(3, 3));
+    threshold(mat, mat, 0, 255, THRESH_OTSU);
+    mat = 255 - mat;
+    std::vector<std::vector<Point>> contours;
+    std::vector<Vec4i> hierarchy;
+    findContours(mat, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_NONE, Point());
+    Mat imageContours = Mat::zeros(mat.size(), CV_8UC1);
+
+    std::vector<Rect> rectMat;
+    for (int i = 0; i < contours.size(); i++) {
+        //绘制轮廓
+        drawContours(imageContours, contours, i, Scalar(255), 1, 8, hierarchy);
+        //绘制轮廓的最小外结矩形
+        RotatedRect rect = minAreaRect(contours[i]);
+        Point2f P[4];
+        rect.points(P);
+        Rect subRect(P[2], P[0]);
+        //如果面积小于64或者是大于1024个像素点则认为这不是一个有效的字符或者是数字
+        //小于可能是噪声，大于可能是没有完全分割
+        if (rect.size.area() < 9 || rect.size.area() > 1024)
+            continue;
+        rectMat.push_back(subRect);
+    }
+    //按照顺序进行排序字母和数字
+    std::sort(rectMat.begin(), rectMat.end(), [](const Rect &rect1, const Rect &rect2) {
+        return rect1.x < rect2.x;
+    });
+    for (Rect &rect3:rectMat) {
+        std::cout << rect3 << std::endl;
+    }
+    //取得所有的字母和数字
+    std::vector<Mat> resultMat;
+    for (Rect &subRect:rectMat) {
+        Mat subMat = mat(subRect);
+        resultMat.push_back(subMat);
+    }
+    return resultMat;
+}
+
 int main() {
-    Mat mat = imread("../verification_code_dataset/train_images/1591854364_6424382.jpg", CV_8UC1);
-    Mat mat_copy=mat.clone();
+    Mat mat = imread("../verification_code_dataset/train_images/1591854367_325703.jpg", CV_8UC1);
+    //resize(mat,mat,Size(mat.rows*2,mat.rows*2));
     if (mat.empty()) {
         std::cout << "Image path error!" << std::endl;
         return -1;
     }
-    //cvtColor(mat,mat,COLOR_RGB2GRAY);
-    blur(mat,mat,Size(3,3));
-    threshold(mat,mat,0,255,THRESH_OTSU);
-    mat=255-mat;
-
-    std::vector<std::vector<Point>> contours;
-    std::vector<Vec4i> hierarchy;
-    findContours(mat,contours,hierarchy,RETR_EXTERNAL, CHAIN_APPROX_NONE,Point());
-    Mat imageContours=Mat::zeros(mat.size(),CV_8UC1);
-    std::cout<<contours.size()<<std::endl;
-    for(int i=0;i<contours.size();i++)
-    {
-        //绘制轮廓
-        drawContours(imageContours,contours,i,Scalar(255),1,8,hierarchy);
-
-        //绘制轮廓的最小外结矩形
-        RotatedRect rect=minAreaRect(contours[i]);
-        Point2f P[4];
-        rect.points(P);
-        for(int j=0;j<=3;j++)
-        {
-            line(imageContours,P[j],P[(j+1)%4],Scalar(255),2);
-            line(mat_copy,P[j],P[(j+1)%4],Scalar(255),2);
-        }
-
-    }
-    imshow("MinAreaRect",mat_copy);
-    waitKey(0);
+    std::vector<Mat> lettersAndDigits = SplitLetterAndDigit(mat);
     return 0;
 }
+
+
