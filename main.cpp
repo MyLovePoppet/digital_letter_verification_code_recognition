@@ -57,12 +57,27 @@ std::vector<Mat> SplitLetterAndDigit(Mat &src) {
         RotatedRect rect = minAreaRect(contours[i]);
         Point2f P[4];
         rect.points(P);
+        if (P[2].x < 0)
+            P[2].x = 0;
+        if (P[2].y < 0)
+            P[2].y = 0;
+        if (P[0].x > mat.cols)
+            P[0].x = mat.cols;
+        if (P[0].y > mat.rows)
+            P[0].y = mat.rows;
         Rect subRect(P[2], P[0]);
         //如果面积小于64或者是大于1024个像素点则认为这不是一个有效的字符或者是数字
         //小于可能是噪声，大于可能是没有完全分割
-        if (rect.size.area() < 9 || rect.size.area() > 1024)
+        if (rect.size.area() < 64 || rect.size.area() > 4096)
             continue;
-        rectMat.push_back(subRect);
+        if(rect.size.area()>1024){
+            Rect rect1(subRect.x,subRect.y,subRect.width/2,subRect.height);
+            Rect rect2(subRect.x+subRect.width/2,subRect.y,subRect.width/2,subRect.height);
+            rectMat.push_back(rect1);
+            rectMat.push_back(rect2);
+        }
+        else
+            rectMat.push_back(subRect);
     }
     //按照顺序进行排序字母和数字
     std::sort(rectMat.begin(), rectMat.end(), [](const Rect &rect1, const Rect &rect2) {
@@ -75,13 +90,15 @@ std::vector<Mat> SplitLetterAndDigit(Mat &src) {
     std::vector<Mat> resultMat;
     for (Rect &subRect:rectMat) {
         Mat subMat = mat(subRect);
+        imshow("11",subMat);
+        waitKey(0);
         resultMat.push_back(subMat);
     }
     return resultMat;
 }
 
 int main() {
-    Mat mat = imread("../verification_code_dataset/train_images/1591854367_325703.jpg", CV_8UC1);
+    Mat mat = imread("../verification_code_dataset/train_images/1591854437_698722.jpg", CV_8UC1);
     //resize(mat,mat,Size(mat.rows*2,mat.rows*2));
     if (mat.empty()) {
         std::cout << "Image path error!" << std::endl;
