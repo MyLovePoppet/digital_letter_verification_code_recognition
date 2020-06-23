@@ -11,7 +11,7 @@ find_package(OpenCV REQUIRED)
 
 include_directories(${OpenCV_INCLUDE_DIRS})
 
-add_executable(digital_letter_verification_code_recognition main.cpp)
+add_executable(digital_letter_verification_code_recognition BPNN.cpp)
 # add libs you need
 set(OpenCV_LIBS opencv_core opencv_imgproc opencv_highgui opencv_imgcodecs)
 # linking
