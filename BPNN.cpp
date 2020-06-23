@@ -7,12 +7,12 @@
 #include <fstream>
 
 using namespace std;
+using namespace cv;
 #define INPUT_N 784
 #define HIDDEN_N 128
 #define OUTPUT_N 62
 #define MAX_TRAIN_TIMES 4000
 #define MAX_TEST_TIMES 10000
-using namespace cv;
 //最小外接矩形算法
 std::vector<Mat> SplitLetterAndDigit(Mat &src) {
     Mat mat = src.clone();
@@ -44,7 +44,7 @@ std::vector<Mat> SplitLetterAndDigit(Mat &src) {
         //如果面积小于64或者是大于1024个像素点则认为这不是一个有效的字符或者是数字
         //小于可能是噪声，大于可能是没有完全分割
         double area=subRect.width*subRect.height;
-        if (area < 64 || area > 4096)
+        if (area < 36 || area > 4096)
             continue;
         if(area>1024){
             Rect rect1(subRect.x,subRect.y,subRect.width/2,subRect.height);
@@ -66,6 +66,39 @@ std::vector<Mat> SplitLetterAndDigit(Mat &src) {
         resultMat.push_back(subMat);
     }
     return resultMat;
+}
+//计算邻域非白色的个数
+size_t calculateNoiseCount(Mat &img, size_t indexI, size_t indexJ) {
+    size_t count = 0;
+    size_t rows = img.rows;
+    size_t cols = img.cols;
+    for (size_t i = indexI - 1; i < indexI + 1; i++) {
+        if (i < 0 || i >= rows)
+            continue;
+        for (size_t j = indexJ - 1; j < indexJ + 1; j++) {
+            if (j < 0 || j >= cols)
+                continue;
+            if (img.at<uchar>(i, j) < 255)
+                count++;
+        }
+    }
+    return count;
+}
+
+//8邻域降噪，如果该点为黑，但是周围黑点小于4，那么则认为这个点是噪声
+void noiseReduction(Mat &img, int k = 4) {
+    std::vector<std::pair<size_t, size_t>> indexes;
+    for (size_t i = 0; i < img.rows; i++) {
+        for (size_t j = 0; j < img.cols; j++) {
+            if (img.at<uchar>(i, j) < 255) {
+                if (calculateNoiseCount(img, i, j) < 4)
+                    indexes.emplace_back(i, j);
+            }
+        }
+    }
+    for (std::pair<size_t, size_t> pair:indexes) {
+        img.at<uchar>(pair.first, pair.second) = 255;
+    }
 }
 
 class CBPNN {
@@ -173,41 +206,45 @@ public:
     }
 
     void readData() {
-        double Etotal = 0.0;
-        fstream file_in;
-        file_in.open("../verification_code_dataset/data_train.txt");
-        std::string s;
-        for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
-            int data[10];
-            std::string imageName;
-            file_in >> imageName;
-            for (int j = 0; j < 10; j++)
-                file_in >> data[j];
-            std::cout<<"Current training image:"<<imageName<<std::endl;
-            Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
-            std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
-            std::size_t size = splitMats.size() > 10 ? 10 : splitMats.size();
-            for (int j = 0; j < size; j++) {
-                Mat trainMat = splitMats[j].clone();
-                resize(trainMat, trainMat, Size(28, 28));
-                for (int k = 1; k <= 28; k++) {
-                    for (int kk = 1; kk <= 28; kk++) {
-                        input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
+        int K=50;
+        while(K-->0){
+            double Etotal = 0.0;
+            fstream file_in;
+            file_in.open("../verification_code_dataset/data_train.txt");
+            std::string s;
+            for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
+                int data[10];
+                std::string imageName;
+                file_in >> imageName;
+                for (int j = 0; j < 10; j++)
+                    file_in >> data[j];
+                //std::cout<<"Current training image:"<<imageName<<std::endl;
+                Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
+                std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
+                std::size_t size = splitMats.size() > 10 ? 10 : splitMats.size();
+                if(size!=10)
+                    continue;
+                for (int j = 0; j < size; j++) {
+                    Mat trainMat = splitMats[j].clone();
+                    resize(trainMat, trainMat, Size(28, 28));
+                    for (int k = 1; k <= 28; k++) {
+                        for (int kk = 1; kk <= 28; kk++) {
+                            input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
+                        }
                     }
+                    //memset(target,0,sizeof(double)*OUTPUT_N);
+                    target[data[j]+1]=1;
+                    layerForward();     //前项传播
+                    Etotal += getOutputError();   //计算总的误差
+                    getHiddenError();   //计算中间层误差
+                    adjustWeights();    //反向传播调节
+                    target[data[j]+1]=0;
                 }
-                //memset(target,0,sizeof(double)*OUTPUT_N);
-                target[data[j]+1]=1;
-                layerForward();     //前项传播
-                Etotal += getOutputError();   //计算总的误差
-                getHiddenError();   //计算中间层误差
-                adjustWeights();    //反向传播调节
-                target[data[j]+1]=0;
             }
-
-
+            file_in.close();
+            cout << 50-K<<": "<<Etotal << endl;
         }
-        file_in.close();
-        cout << Etotal << endl;
+
             /*
             FILE *fpRead = fopen("train_sample.txt", "r");
             if (fpRead == NULL)
@@ -331,7 +368,34 @@ public:
     }
 
     void test() {
-        int i, j, times = MAX_TEST_TIMES;
+        char letters[]="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        std::string testImgName="1591854397_8273308.jpg";
+        Mat mat=imread("../verification_code_dataset/train_images/"+testImgName,CV_8UC1);
+        std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
+        std::size_t size = splitMats.size() > 10 ? 10 : splitMats.size();
+        for (int j = 0; j < size; j++) {
+            Mat trainMat = splitMats[j].clone();
+            resize(trainMat, trainMat, Size(28, 28));
+            noiseReduction(trainMat);
+            for (int k = 1; k <= 28; k++) {
+                for (int kk = 1; kk <= 28; kk++) {
+                    input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
+                }
+            }
+            layerForward();
+            int index=1;
+            double max_num = output_units[1];        //找到输出层数组元素最接近1的元素位置作为目标输出
+            for (int i = 1; i <= output_n; i++)
+                if (max_num < output_units[i]){
+                    max_num = output_units[i];
+                    index=i;
+                }
+            std::cout<<letters[index-1]<<" ";
+        }
+        std::cout<<std::endl;
+        imshow("Mat",mat);
+        waitKey(0);
+        /*int i, j, times = MAX_TEST_TIMES;
         int target_output, sum_correct = 0, index;
         double temp, Etotal, max_num;
         char a[28][28];
@@ -364,45 +428,45 @@ public:
             }
         cout << "ending..." << endl;
         cout << "correct Rate:" << sum_correct * 1.0 / MAX_TEST_TIMES << endl;//正确率
-        fclose(fpRead);
+        fclose(fpRead);*/
     }
 
     ~CBPNN() {
         int i;
-        delete[]input_units;
-        delete[]hidden_units;
-        delete[]output_units;
-
-        delete[]hidden_delta;
-        delete[]output_delta;
-
-        delete[]target;
-
-        for (i = 0; i < input_n + 1; i++)
-            delete[]input_weights[i];
-        delete[]input_weights;
-
-        for (i = 0; i < hidden_n + 1; i++)
-            delete[]hidden_weights[i];
-        delete[]hidden_weights;
-
-        for (i = 0; i < input_n + 1; i++)
-            delete[]input_prev_weights[i];
-        delete[]input_prev_weights;
-        for (i = 0; i < hidden_n + 1; i++)
-            delete[]hidden_prev_weights[i];
-        delete[]hidden_prev_weights;
+//        delete[]input_units;
+//        delete[]hidden_units;
+//        delete[]output_units;
+//
+//        delete[]hidden_delta;
+//        delete[]output_delta;
+//
+//        delete[]target;
+//
+//        for (i = 0; i < input_n + 1; i++)
+//            delete[]input_weights[i];
+//        delete[]input_weights;
+//
+//        for (i = 0; i < hidden_n + 1; i++)
+//            delete[]hidden_weights[i];
+//        delete[]hidden_weights;
+//
+//        for (i = 0; i < input_n + 1; i++)
+//            delete[]input_prev_weights[i];
+//        delete[]input_prev_weights;
+//        for (i = 0; i < hidden_n + 1; i++)
+//            delete[]hidden_prev_weights[i];
+//        delete[]hidden_prev_weights;
     }
 };
 
 int main() {
 
     CBPNN BPNN;
-    BPNN.initWeights();
-    BPNN.readData();            //读取数据 同时进行前项传播，反向传播，调节weights
-    BPNN.saveWeights();          //训练完成 保存weights数据
+    //BPNN.initWeights();
     BPNN.readWeights();
-    //BPNN.test();                 //进行正确率测试
+    //BPNN.readData();            //读取数据 同时进行前项传播，反向传播，调节weights
+    //BPNN.saveWeights();          //训练完成 保存weights数据
+    BPNN.test();                 //进行正确率测试
     //system("pause");
 
 //    Mat mat=imread("../verification_code_dataset/train_images/1591854365_812406.jpg",CV_8UC1);
