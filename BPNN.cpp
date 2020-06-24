@@ -1,8 +1,6 @@
-#include<iostream>
-#include<stdio.h>
-#include<stdlib.h>
-#include<ctime>
-#include<math.h>
+#include <iostream>
+#include <cmath>
+#include <ctime>
 #include <opencv2/opencv.hpp>
 #include <fstream>
 
@@ -12,13 +10,15 @@ using namespace cv;
 #define HIDDEN_N 128
 #define OUTPUT_N 62
 #define MAX_TRAIN_TIMES 4000
-#define MAX_TEST_TIMES 10000
+Mat Kernel(3, 3, CV_8SC1);
+char letters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
 //最小外接矩形算法
-std::vector<Mat> SplitLetterAndDigit(Mat &src) {
-    Mat mat = src.clone();
-    blur(mat, mat, Size(3, 3));
-    threshold(mat, mat, 0, 255, THRESH_OTSU);
-    mat = 255 - mat;
+std::vector<Mat> SplitLetterAndDigit(Mat &mat) {
+//    Mat mat = src.clone();
+//    blur(mat, mat, Size(3, 3));
+//    threshold(mat, mat, 0, 255, THRESH_OTSU);
+//    mat = 255 - mat;
     std::vector<std::vector<Point>> contours;
     std::vector<Vec4i> hierarchy;
     findContours(mat, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_NONE, Point());
@@ -43,16 +43,15 @@ std::vector<Mat> SplitLetterAndDigit(Mat &src) {
         Rect subRect(P[2], P[0]);
         //如果面积小于64或者是大于1024个像素点则认为这不是一个有效的字符或者是数字
         //小于可能是噪声，大于可能是没有完全分割
-        double area=subRect.width*subRect.height;
+        double area = subRect.width * subRect.height;
         if (area < 36 || area > 4096)
             continue;
-        if(area>1024){
-            Rect rect1(subRect.x,subRect.y,subRect.width/2,subRect.height);
-            Rect rect2(subRect.x+subRect.width/2,subRect.y,subRect.width/2,subRect.height);
+        if (area > 1024) {
+            Rect rect1(subRect.x, subRect.y, subRect.width / 2, subRect.height);
+            Rect rect2(subRect.x + subRect.width / 2, subRect.y, subRect.width / 2, subRect.height);
             rectMat.push_back(rect1);
             rectMat.push_back(rect2);
-        }
-        else
+        } else
             rectMat.push_back(subRect);
     }
     //按照顺序进行排序字母和数字
@@ -67,6 +66,12 @@ std::vector<Mat> SplitLetterAndDigit(Mat &src) {
     }
     return resultMat;
 }
+
+//图像锐化，使图像更加清晰
+void sharpen(Mat &img, Mat kenel = Kernel) {
+    filter2D(img, img, -1, kenel);
+}
+
 //计算邻域非白色的个数
 size_t calculateNoiseCount(Mat &img, size_t indexI, size_t indexJ) {
     size_t count = 0;
@@ -101,31 +106,48 @@ void noiseReduction(Mat &img, int k = 4) {
     }
 }
 
+void Pretreatment(Mat &mat) {
+    //拉普拉斯算子锐化
+    imshow("原始",mat);
+    //waitKey(0);
+    sharpen(mat);
+
+    //中值滤波
+    medianBlur(mat, mat, 3);
+
+    //均值滤波降噪
+    //blur(mat, mat, Size(3, 3));
+    //8邻域降噪
+    noiseReduction(mat);
+
+    threshold(mat, mat, 0, 255, THRESH_OTSU);
+    mat = 255 - mat;
+    imshow("最终处理结果",mat);
+    waitKey(0);
+}
+
 class CBPNN {
 private:
-    int input_n;                  // ?????????????
-    int hidden_n;                 // ??????????????
-    int output_n;                 // ?????????????
+    int input_n;
+    int hidden_n;
+    int output_n;
 
-    double *input_units;          // ?????????????(input_units[i], i=1,2,...,input_n),????input_units[0]=1.0
-    double *hidden_units;         // ?????????????(hidden_units[i], i=1,2,...,hidden_n),????hidden_units[0]=1.0
-    double *output_units;         // ?????????????(output_units[i], i=1,2,...,output_n)
+    double *input_units;
+    double *hidden_units;
+    double *output_units;
 
-    double *hidden_delta;         // ???????????????(hidden_delta[i],i=1,...,hidden_n)
-    double *output_delta;         // ???????????????(output_delta[i],i=1,...,output_n)
+    double *hidden_delta;
+    double *output_delta;
 
-    double *target;               // ???????(target[i],i=1,...,output_n)
+    double *target;
 
-    double **input_weights;       // ???????????????????? input_weights[i][j]?????i??????????j?????????????????,input_weights[0][j]?????????j??????????
-    double **hidden_weights;      // ???????????????????? hidden_weights[i][j]?????i??????????j?????????????????,hidden_weights[0][j]?????????j??????????
+    double **input_weights;
+    double **hidden_weights;
 
-    // ?????????????????
-    double **input_prev_weights;  // ???????????????????
-    double **hidden_prev_weights; // ???????????????????
-    double eta;                   // ??????,????0.3, hidden_weights = hidden_weights + eta*output_delta*hidden_units + momentum*hidden_prev_weights
-    //hidden_prev_weights = eta*output_delta*hidden_units + momentum*hidden_prev_weights
-    double momentum;              // ???????,????0.3, input_weights = input_weights + eta*hidden_delta*input_units + momentum*input_prev_weights
-    //input_prev_weights = eta*hidden_delta*input_units + momentum*input_prev_weights
+    double **input_prev_weights;
+    double **hidden_prev_weights;
+    double eta;
+    double momentum;
 
 public:
     CBPNN() {
@@ -189,25 +211,26 @@ public:
     void saveWeights()   //保存weights
     {
         int i, j;
-        FILE *fpWrite = fopen("input_weights_data.txt", "w");
-        if (fpWrite == NULL)
+        fstream file_out;
+        file_out.open("input_weights_data.txt", ios::out);
+        if (!file_out.is_open())
             exit(-1);
         for (i = 0; i < input_n + 1; i++)
             for (j = 1; j <= hidden_n; j++)
-                fprintf(fpWrite, "%lf\n", input_weights[i][j]);
-        fclose(fpWrite);
-        FILE *fqWrite = fopen("hidden_weights_data.txt", "w");
-        if (fqWrite == NULL)
+                file_out << input_weights[i][j] << endl;
+        file_out.close();
+        file_out.open("hidden_weights_data.txt", ios::out);
+        if (!file_out.is_open())
             exit(-1);
         for (i = 0; i < hidden_n + 1; i++)
             for (j = 1; j <= output_n; j++)
-                fprintf(fqWrite, "%lf\n", hidden_weights[i][j]);
-        fclose(fpWrite);
+                file_out << hidden_weights[i][j] << endl;
+        file_out.close();
     }
 
     void readData() {
-        int K=50;
-        while(K-->0){
+        int K = 10;
+        while (K-- > 0) {
             double Etotal = 0.0;
             fstream file_in;
             file_in.open("../verification_code_dataset/data_train.txt");
@@ -218,11 +241,11 @@ public:
                 file_in >> imageName;
                 for (int j = 0; j < 10; j++)
                     file_in >> data[j];
-                //std::cout<<"Current training image:"<<imageName<<std::endl;
                 Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
+                Pretreatment(mat);
                 std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
-                std::size_t size = splitMats.size() > 10 ? 10 : splitMats.size();
-                if(size!=10)
+                std::size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
+                if (size != 10)
                     continue;
                 for (int j = 0; j < size; j++) {
                     Mat trainMat = splitMats[j].clone();
@@ -232,65 +255,37 @@ public:
                             input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
                         }
                     }
-                    //memset(target,0,sizeof(double)*OUTPUT_N);
-                    target[data[j]+1]=1;
+                    target[data[j] + 1] = 1;
                     layerForward();     //前项传播
                     Etotal += getOutputError();   //计算总的误差
                     getHiddenError();   //计算中间层误差
                     adjustWeights();    //反向传播调节
-                    target[data[j]+1]=0;
+                    target[data[j] + 1] = 0;
                 }
             }
             file_in.close();
-            cout << 50-K<<": "<<Etotal << endl;
+            cout << 50 - K << ": " << Etotal << endl;
         }
-
-            /*
-            FILE *fpRead = fopen("train_sample.txt", "r");
-            if (fpRead == NULL)
-                exit(-1);
-            times = MAX_TRAIN_TIMES;
-            while (times--)   //采用了每次读入一组数据 便进行传播和调节weights
-            {
-
-                for (i = 1; i < input_n + output_n + 1; i++) {
-                    if (i < input_n + 1)
-                        fscanf(fpRead, "%lf", &input_units[i]);
-                    else
-                        fscanf(fpRead, "%lf", &target[i - input_n]);
-                }
-                layerForward();     //前项传播
-                Etotal += getOutputError();   //计算总的误差
-                getHiddenError();   //计算中间层误差
-                adjustWeights();    //反向传播调节
-            }
-            cout << Etotal << endl;
-            fclose(fpRead);
-             */
-        //}
     }
 
     void readWeights() //读取weights
     {
         int i, j;
-        {
-            FILE *fpRead = fopen("input_weights_data.txt", "r");
-            if (fpRead == NULL)
-                exit(-1);
-            for (i = 0; i < input_n + 1; i++)
-                for (j = 1; j <= hidden_n; j++)
-                    fscanf(fpRead, "%lf", &input_weights[i][j]);
-            fclose(fpRead);
-        }
-        {
-            FILE *fpRead = fopen("hidden_weights_data.txt", "r");
-            if (fpRead == NULL)
-                exit(-1);
-            for (i = 0; i < hidden_n + 1; i++)
-                for (j = 1; j <= output_n; j++)
-                    fscanf(fpRead, "%lf", &hidden_weights[i][j]);
-            fclose(fpRead);
-        }
+        fstream file_in;
+        file_in.open("input_weights_data.txt", ios::in);
+        if (!file_in.is_open())
+            exit(-1);
+        for (i = 0; i < input_n + 1; i++)
+            for (j = 1; j <= hidden_n; j++)
+                file_in >> input_weights[i][j];
+        file_in.close();
+        file_in.open("hidden_weights_data.txt", ios::in);
+        if (!file_in.is_open())
+            exit(-1);
+        for (i = 0; i < hidden_n + 1; i++)
+            for (j = 1; j <= output_n; j++)
+                file_in >> hidden_weights[i][j];
+        file_in.close();
     }
 
     double sigmoidal(double x) {
@@ -320,8 +315,6 @@ public:
         int i;
         double Etotal = 0.0;  //calculate the error
         for (i = 1; i <= output_n; i++) {
-            /*output_delta[i]=0.5*(output_units[i]-target[i])*(output_units[i]-target[i]);
-            Etotal+=fabs(output_delta[i]);*/
             output_delta[i] = output_units[i] * (1.0 - output_units[i]) * (target[i] - output_units[i]);
             Etotal += fabs(output_delta[i]);
         }
@@ -331,14 +324,6 @@ public:
 
     double getHiddenError() {
         int i, j;
-        /*double temp;
-        for(i=1;i<=hidden_n;i++)
-        {
-            temp=0.0;
-            for(j=1;j<=output_n;j++)
-                temp+=output_delta[j]*hidden_weights[i][j];
-            hidden_delta[i]=temp*hidden_units[i]*(1-hidden_units[i]);
-        }*/
         double Etotal = 0.0;
         for (i = 1; i <= hidden_n; i++) {
             double temp = 0.0;
@@ -367,68 +352,31 @@ public:
             }
     }
 
-    void test() {
-        char letters[]="abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        std::string testImgName="1591854397_8273308.jpg";
-        Mat mat=imread("../verification_code_dataset/train_images/"+testImgName,CV_8UC1);
+    void test(Mat &mat) {
+        Pretreatment(mat);
         std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
         std::size_t size = splitMats.size() > 10 ? 10 : splitMats.size();
         for (int j = 0; j < size; j++) {
             Mat trainMat = splitMats[j].clone();
             resize(trainMat, trainMat, Size(28, 28));
-            noiseReduction(trainMat);
             for (int k = 1; k <= 28; k++) {
                 for (int kk = 1; kk <= 28; kk++) {
                     input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
                 }
             }
             layerForward();
-            int index=1;
+            int index = 1;
             double max_num = output_units[1];        //找到输出层数组元素最接近1的元素位置作为目标输出
             for (int i = 1; i <= output_n; i++)
-                if (max_num < output_units[i]){
+                if (max_num < output_units[i]) {
                     max_num = output_units[i];
-                    index=i;
+                    index = i;
                 }
-            std::cout<<letters[index-1]<<" ";
+            std::cout << letters[index - 1] << " ";
         }
-        std::cout<<std::endl;
-        imshow("Mat",mat);
+        std::cout << std::endl;
+        imshow("Mat", mat);
         waitKey(0);
-        /*int i, j, times = MAX_TEST_TIMES;
-        int target_output, sum_correct = 0, index;
-        double temp, Etotal, max_num;
-        char a[28][28];
-        FILE *fpRead = fopen("test_sample.txt", "r");
-        if (fpRead == NULL)
-            exit(-1);
-        while (times--) {
-            for (i = 1; i <= input_n + 1; i++) {
-                if (i < input_n + 1)
-                    fscanf(fpRead, "%lf", &input_units[i]);
-                else
-                    fscanf(fpRead, "%d", &target_output);
-            }
-            for (i = 0; i < 28; i++)
-                for (j = 0; j < 28; j++) {
-                    if (input_units[j + i * 28 + 1] > 0)
-                        a[i][j] = 0 + '0';
-                    else
-                        a[i][j] = ' ';
-                }
-            layerForward();
-            max_num = output_units[1];        //找到输出层数组元素最接近1的元素位置作为目标输出
-            for (i = 1; i <= output_n; i++)
-                if (max_num < output_units[i])
-                    max_num = output_units[i];
-            for (i = 1; i <= output_n; i++)
-                if (fabs(max_num - output_units[i]) < 1e-5)
-                    break;
-            index = i;
-            }
-        cout << "ending..." << endl;
-        cout << "correct Rate:" << sum_correct * 1.0 / MAX_TEST_TIMES << endl;//正确率
-        fclose(fpRead);*/
     }
 
     ~CBPNN() {
@@ -460,13 +408,25 @@ public:
 };
 
 int main() {
-
-    CBPNN BPNN;
+    short scalar[3][3] = {
+            {0,  -1, 0},
+            {-1, 5,  -1},
+            {0,  -1, 0}
+    };
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; j < 3; j++)
+            Kernel.at<short>(i, j) = scalar[i][j];
+    Mat mat = imread("../verification_code_dataset/train_images/1591854426_4843009.jpg", CV_8UC1);
+//    Pretreatment(mat);
+//    imshow("降噪", mat);
+//    waitKey(0);
+    Pretreatment(mat);
+    //CBPNN BPNN;
     //BPNN.initWeights();
-    BPNN.readWeights();
+    //BPNN.readWeights();
     //BPNN.readData();            //读取数据 同时进行前项传播，反向传播，调节weights
     //BPNN.saveWeights();          //训练完成 保存weights数据
-    BPNN.test();                 //进行正确率测试
+   //BPNN.test(mat);                 //进行正确率测试
     //system("pause");
 
 //    Mat mat=imread("../verification_code_dataset/train_images/1591854365_812406.jpg",CV_8UC1);

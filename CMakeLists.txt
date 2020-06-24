@@ -3,7 +3,7 @@ project(digital_letter_verification_code_recognition)
 
 set(CMAKE_CXX_STANDARD 14)
 
-set(OpenCV_DIR "D:\\OpenCV\\mingw_build\\install")
+set(OpenCV_DIR "D:\\shuqy-package\\OpenCV\\mingw_build\\install")
 
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/")
 
