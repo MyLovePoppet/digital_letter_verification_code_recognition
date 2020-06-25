@@ -11,56 +11,61 @@ using namespace cv;
 #define OUTPUT_N 62
 #define MAX_TRAIN_TIMES 4000
 Mat Kernel(3, 3, CV_8SC1);
-char letters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const char letters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+template<class T>
+void clamp(T &x, T min, T max) {
+    if (x < min)
+        x = min;
+    else if (x > max)
+        x = max;
+}
+
+void AssertRect(Rect &bound, int cols, int rows) {
+    clamp(bound.x, 0, cols);
+    clamp(bound.y, 0, rows);
+    clamp(bound.height, 0, rows - bound.y);
+    clamp(bound.width, 0, cols - bound.x);
+}
 
 //最小外接矩形算法
 std::vector<Mat> SplitLetterAndDigit(Mat &mat) {
-//    Mat mat = src.clone();
-//    blur(mat, mat, Size(3, 3));
-//    threshold(mat, mat, 0, 255, THRESH_OTSU);
-//    mat = 255 - mat;
     std::vector<std::vector<Point>> contours;
     std::vector<Vec4i> hierarchy;
+    //找轮廓
     findContours(mat, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_NONE, Point());
-    Mat imageContours = Mat::zeros(mat.size(), CV_8UC1);
-
-    std::vector<Rect> rectMat;
+    std::vector<Rect> rectMats;
     for (int i = 0; i < contours.size(); i++) {
-        //绘制轮廓
-        drawContours(imageContours, contours, i, Scalar(255), 1, 8, hierarchy);
         //绘制轮廓的最小外结矩形
         RotatedRect rect = minAreaRect(contours[i]);
-        Point2f P[4];
-        rect.points(P);
-        if (P[2].x < 0)
-            P[2].x = 0;
-        if (P[2].y < 0)
-            P[2].y = 0;
-        if (P[0].x > mat.cols)
-            P[0].x = mat.cols;
-        if (P[0].y > mat.rows)
-            P[0].y = mat.rows;
-        Rect subRect(P[2], P[0]);
-        //如果面积小于64或者是大于1024个像素点则认为这不是一个有效的字符或者是数字
-        //小于可能是噪声，大于可能是没有完全分割
-        double area = subRect.width * subRect.height;
-        if (area < 36 || area > 4096)
+        //最小包围矩形的外接矩形
+        Rect bound = rect.boundingRect();
+        //检测有效性，不能下标越界了
+        AssertRect(bound, mat.cols, mat.rows);
+        //验证码字符的高度不可能小于10
+        if (bound.height < 10)
             continue;
-        if (area > 1024) {
-            Rect rect1(subRect.x, subRect.y, subRect.width / 2, subRect.height);
-            Rect rect2(subRect.x + subRect.width / 2, subRect.y, subRect.width / 2, subRect.height);
-            rectMat.push_back(rect1);
-            rectMat.push_back(rect2);
-        } else
-            rectMat.push_back(subRect);
+        if (bound.width > 50) {
+            //如果宽度大于50，则认为有粘连的情况，按照每35个像素宽度进行取一个矩形块
+            //35个像素宽度是因为一张验证码有10个字符，宽度为350个像素点
+            int subSize = floor(bound.width / 35.0);
+            int averageWidth = bound.width / subSize;
+            for (int j = 0; j < subSize; j++) {
+                Rect subRect(bound.x + averageWidth * j, bound.y, averageWidth, bound.height);
+                rectMats.push_back(subRect);
+            }
+        } else {
+            rectMats.push_back(bound);
+        }
     }
     //按照顺序进行排序字母和数字
-    std::sort(rectMat.begin(), rectMat.end(), [](const Rect &rect1, const Rect &rect2) {
+    std::sort(rectMats.begin(), rectMats.end(), [](const Rect &rect1, const Rect &rect2) {
         return rect1.x < rect2.x;
     });
     //取得所有的字母和数字
+    int i=0;
     std::vector<Mat> resultMat;
-    for (Rect &subRect:rectMat) {
+    for (Rect &subRect:rectMats) {
         Mat subMat = mat(subRect);
         resultMat.push_back(subMat);
     }
@@ -68,7 +73,7 @@ std::vector<Mat> SplitLetterAndDigit(Mat &mat) {
 }
 
 //图像锐化，使图像更加清晰
-void sharpen(Mat &img, Mat kenel = Kernel) {
+void sharpen(Mat &img, const Mat &kenel = Kernel) {
     filter2D(img, img, -1, kenel);
 }
 
@@ -108,22 +113,24 @@ void noiseReduction(Mat &img, int k = 4) {
 
 void Pretreatment(Mat &mat) {
     //拉普拉斯算子锐化
-    imshow("原始",mat);
-    //waitKey(0);
     sharpen(mat);
-
     //中值滤波
     medianBlur(mat, mat, 3);
-
-    //均值滤波降噪
-    //blur(mat, mat, Size(3, 3));
     //8邻域降噪
     noiseReduction(mat);
-
+    //二值化
     threshold(mat, mat, 0, 255, THRESH_OTSU);
     mat = 255 - mat;
-    imshow("最终处理结果",mat);
-    waitKey(0);
+}
+
+/* Returns length of LCS for X[0..m-1], Y[0..n-1] */
+int lcs(string X, string Y, int m, int n) {
+    if (m == 0 || n == 0)
+        return 0;
+    if (X[m - 1] == Y[n - 1])
+        return 1 + lcs(X, Y, m - 1, n - 1);
+    else
+        return max(lcs(X, Y, m, n - 1), lcs(X, Y, m - 1, n));
 }
 
 class CBPNN {
@@ -288,13 +295,15 @@ public:
         file_in.close();
     }
 
+    //sigmod激活函数
     double sigmoidal(double x) {
         return 1 / (1 + exp(-x));
     }
 
+    //前向传播
     void layerForward() {
-        int i, j, k;
-        double temp, Etotal;
+        int i, j;
+        double temp;
         for (i = 1; i <= hidden_n; i++)//input->hidden
         {
             temp = 0.0;
@@ -318,7 +327,6 @@ public:
             output_delta[i] = output_units[i] * (1.0 - output_units[i]) * (target[i] - output_units[i]);
             Etotal += fabs(output_delta[i]);
         }
-
         return Etotal;
     }
 
@@ -337,7 +345,6 @@ public:
 
     void adjustWeights() {
         int i, j;
-
         for (i = 0; i < hidden_n + 1; i++)             //out->hidden
             for (j = 1; j <= output_n; j++) {
                 hidden_weights[i][j] += eta * output_delta[j] * hidden_units[i] + momentum * hidden_prev_weights[i][j];
@@ -352,10 +359,58 @@ public:
             }
     }
 
+    void test() {
+        int sum_correct;
+        fstream file_in;
+        file_in.open("../verification_code_dataset/data_train.txt");
+        std::string s;
+        for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
+            int data[10];
+            std::string imageName;
+            file_in >> imageName;
+            string correct;
+            string predict;
+            for (int j = 0; j < 10; j++) {
+                file_in >> data[j];
+                correct.push_back(letters[data[j]]);
+            }
+
+            Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
+            Pretreatment(mat);
+            std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
+            std::size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
+            for (int j = 0; j < size; j++) {
+                Mat trainMat = splitMats[j].clone();
+                resize(trainMat, trainMat, Size(28, 28));
+                for (int k = 1; k <= 28; k++) {
+                    for (int kk = 1; kk <= 28; kk++) {
+                        input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
+                    }
+                }
+                layerForward();     //前项传播
+                int index = 1;
+                double max_num = output_units[1];        //找到输出层数组元素最接近1的元素位置作为目标输出
+                for (int kk = 1; kk <= output_n; kk++)
+                    if (max_num < output_units[kk]) {
+                        max_num = output_units[kk];
+                        index = kk;
+                    }
+                predict.push_back(letters[index - 1]);
+            }
+            cout << correct << "\t" << predict << endl;
+            int c = lcs(correct, predict, correct.length(), predict.length());
+            sum_correct += c;
+        }
+        file_in.close();
+        std::cout << "正确率：" << sum_correct * 1.0 / (4000 * 10) << std::endl;
+    }
+
     void test(Mat &mat) {
+        imshow("原始图像",mat);
+        string predict;
         Pretreatment(mat);
         std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
-        std::size_t size = splitMats.size() > 10 ? 10 : splitMats.size();
+        std::size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
         for (int j = 0; j < size; j++) {
             Mat trainMat = splitMats[j].clone();
             resize(trainMat, trainMat, Size(28, 28));
@@ -364,19 +419,17 @@ public:
                     input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
                 }
             }
-            layerForward();
+            layerForward();     //前项传播
             int index = 1;
             double max_num = output_units[1];        //找到输出层数组元素最接近1的元素位置作为目标输出
-            for (int i = 1; i <= output_n; i++)
-                if (max_num < output_units[i]) {
-                    max_num = output_units[i];
-                    index = i;
+            for (int kk = 1; kk <= output_n; kk++)
+                if (max_num < output_units[kk]) {
+                    max_num = output_units[kk];
+                    index = kk;
                 }
-            std::cout << letters[index - 1] << " ";
+            predict.push_back(letters[index - 1]);
         }
-        std::cout << std::endl;
-        imshow("Mat", mat);
-        waitKey(0);
+        std::cout << "result: " << predict << std::endl;
     }
 
     ~CBPNN() {
@@ -416,39 +469,13 @@ int main() {
     for (int i = 0; i < 3; i++)
         for (int j = 0; j < 3; j++)
             Kernel.at<short>(i, j) = scalar[i][j];
-    Mat mat = imread("../verification_code_dataset/train_images/1591854426_4843009.jpg", CV_8UC1);
-//    Pretreatment(mat);
-//    imshow("降噪", mat);
-//    waitKey(0);
-    Pretreatment(mat);
-    //CBPNN BPNN;
+    Mat mat=imread("../verification_code_dataset/train_images/1591854438_2914968.jpg",CV_8UC1);
+    CBPNN BPNN;
     //BPNN.initWeights();
-    //BPNN.readWeights();
+    BPNN.readWeights();
     //BPNN.readData();            //读取数据 同时进行前项传播，反向传播，调节weights
     //BPNN.saveWeights();          //训练完成 保存weights数据
-   //BPNN.test(mat);                 //进行正确率测试
-    //system("pause");
-
-//    Mat mat=imread("../verification_code_dataset/train_images/1591854365_812406.jpg",CV_8UC1);
-//    std::vector<Mat>result=SplitLetterAndDigit(mat);
-//    for(Mat& inMat:result){
-//        resize(inMat,inMat,Size(28,28));
-//        imshow("41",inMat);
-//        waitKey(0);
-//    }
+    BPNN.test(mat);                 //进行正确率测试
+    waitKey(0);
     return 0;
 }
-/*
-/*  void initSeed(int seed) { srand(seed); }     // 设置随机数生成器种子
-	void readBPNN(SBPNN *, char* filename);    // 读取保存的网络配置及加权系数
-	void saveBPNN(SBPNN *, char *filename);    // 保存当前的网络配置及加权系数
-	SBPNN* createBPNN(int n_in,int n_hidden,int n_out);  //创建一个BP网络，并初始化权值(随机化intput_weidhts和hidden_weights在-0.05到0.05之间, 清零input_prev_weights和hidden_prev_weights)
-	void freeBPNN(SBPNN *);
-	void test(SBPNN *, double *input_unit,int input_num,double *target,int target_num);  //测试, 给定输入input_unit, 返回前向传播后得到的输出target
-	void train(SBPNN *, double *input_unit,int input_num, double *target,int target_num, double *eo, double *eh); //训练样本中的某个输入向量input_unit和期望输出向量target,eo为本次训练输出层误差,eh为隐含层误差
-	void adjustWeights(double *delta, int ndelta, double *ly, int nly, double** w, double **oldw, double eta, double momentum); //更新加权系数,delta是隐藏层或输入层的反向误差, ly是隐藏层或输入层的输出, w是隐藏层或输入层的加权系数, oldw是隐藏层或输入层上一次更新的加权系数
-	void getHiddenError(double* delta_h, int nh, double *delta_o, int no, double **who, double *hidden, double *err);  //计算反向调节时的隐藏层误差delta_h,delta_o是输出层误差,who是隐藏层到输出层的加权系数, hidden是隐藏层的实际输出,err是隐藏层各节点误差绝对值的总和
-	void getOutputError(double *delta, double *target, double *output, int nj, double *err);  //计算反向调节时的输出层误差delta,target是输出层期望输出,output是输出层实际输出,err是输出层各节点误差绝对值的总和
-	void layerforward(double *l1, double *l2, double **conn, int n1, int n2); //执行一次l1到l2的前向传播, conn是连接的加权系数
-	double sigmoidal(double x);
-*/
