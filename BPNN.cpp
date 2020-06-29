@@ -1,6 +1,5 @@
 #include <iostream>
 #include <cmath>
-#include <ctime>
 #include <opencv2/opencv.hpp>
 #include <fstream>
 
@@ -9,9 +8,25 @@ using namespace cv;
 #define INPUT_N 784
 #define HIDDEN_N 128
 #define OUTPUT_N 62
-#define MAX_TRAIN_TIMES 4000
-Mat Kernel(3, 3, CV_8SC1);
-const char letters[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+#define MAX_TRAIN_TIMES 1000
+short scalar[3][3] = {
+        {0,  -1, 0},
+        {-1, 5,  -1},
+        {0,  -1, 0}
+};
+const Mat Kernel(3, 3, CV_8SC1, scalar);
+const string letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const int imageNums[] = {103, 101, 94, 91, 97, 92, 103, 78, 85, 90, 105, 99, 88, 104, 104, 98, 89, 113, 101, 110, 117,
+                         81, 87,
+                         106, 76, 102,
+
+                         107, 100, 114, 87, 115, 110, 119, 95, 95, 125, 120, 83, 92, 93, 102, 86, 98, 103, 97, 112, 97,
+                         111,
+                         24, 106, 98, 87,
+
+                         100, 95, 103, 119, 110, 95, 108, 114, 85, 111};
+
+const size_t charLength = 62;
 
 template<class T>
 void clamp(T &x, T min, T max) {
@@ -29,12 +44,12 @@ void AssertRect(Rect &bound, int cols, int rows) {
 }
 
 //最小外接矩形算法
-std::vector<Mat> SplitLetterAndDigit(Mat &mat) {
-    std::vector<std::vector<Point>> contours;
-    std::vector<Vec4i> hierarchy;
+vector<Mat> SplitLetterAndDigit(Mat &mat) {
+    vector<vector<Point>> contours;
+    vector<Vec4i> hierarchy;
     //找轮廓
     findContours(mat, contours, hierarchy, RETR_EXTERNAL, CHAIN_APPROX_NONE, Point());
-    std::vector<Rect> rectMats;
+    vector<Rect> rectMats;
     for (int i = 0; i < contours.size(); i++) {
         //绘制轮廓的最小外结矩形
         RotatedRect rect = minAreaRect(contours[i]);
@@ -59,12 +74,11 @@ std::vector<Mat> SplitLetterAndDigit(Mat &mat) {
         }
     }
     //按照顺序进行排序字母和数字
-    std::sort(rectMats.begin(), rectMats.end(), [](const Rect &rect1, const Rect &rect2) {
+    sort(rectMats.begin(), rectMats.end(), [](const Rect &rect1, const Rect &rect2) {
         return rect1.x < rect2.x;
     });
     //取得所有的字母和数字
-    int i=0;
-    std::vector<Mat> resultMat;
+    vector<Mat> resultMat;
     for (Rect &subRect:rectMats) {
         Mat subMat = mat(subRect);
         resultMat.push_back(subMat);
@@ -97,7 +111,7 @@ size_t calculateNoiseCount(Mat &img, size_t indexI, size_t indexJ) {
 
 //8邻域降噪，如果该点为黑，但是周围黑点小于4，那么则认为这个点是噪声
 void noiseReduction(Mat &img, int k = 4) {
-    std::vector<std::pair<size_t, size_t>> indexes;
+    vector<pair<size_t, size_t>> indexes;
     for (size_t i = 0; i < img.rows; i++) {
         for (size_t j = 0; j < img.cols; j++) {
             if (img.at<uchar>(i, j) < 255) {
@@ -106,21 +120,25 @@ void noiseReduction(Mat &img, int k = 4) {
             }
         }
     }
-    for (std::pair<size_t, size_t> pair:indexes) {
+    for (pair<size_t, size_t> pair:indexes) {
         img.at<uchar>(pair.first, pair.second) = 255;
     }
 }
 
+//预处理
 void Pretreatment(Mat &mat) {
+
     //拉普拉斯算子锐化
     sharpen(mat);
     //中值滤波
     medianBlur(mat, mat, 3);
+
     //8邻域降噪
     noiseReduction(mat);
     //二值化
     threshold(mat, mat, 0, 255, THRESH_OTSU);
     mat = 255 - mat;
+
 }
 
 /* Returns length of LCS for X[0..m-1], Y[0..n-1] */
@@ -133,349 +151,256 @@ int lcs(string X, string Y, int m, int n) {
         return max(lcs(X, Y, m, n - 1), lcs(X, Y, m - 1, n));
 }
 
-class CBPNN {
-private:
-    int input_n;
-    int hidden_n;
-    int output_n;
+//参考代码，来自于https://www.cnblogs.com/ronny/p/opencv_road_more_01.html
+void Train() {
+    // 512 x 512 零矩阵
+    int width = 512, height = 512;
+    Mat img = Mat::zeros(height, width, CV_8UC3);
 
-    double *input_units;
-    double *hidden_units;
-    double *output_units;
+    // 训练样本
+    float train_data[6][2] = {{500, 60},
+                              {245, 40},
+                              {480, 250},
+                              {160, 380},
+                              {400, 25},
+                              {55,  400}};
+    float labels[6] = {0, 0, 0, 1, 0, 1};  // 每个样本数据对应的输出
+    Mat train_data_mat(6, 2, CV_32FC1, train_data);
+    Mat labels_mat(6, 1, CV_32FC1, labels);
 
-    double *hidden_delta;
-    double *output_delta;
+    // BP 模型创建和参数设置
+    Ptr<ml::ANN_MLP> bp = ml::ANN_MLP::create();
 
-    double *target;
+    Mat layers_size = (Mat_<int>(1, 3) << 2, 6, 1); // 2维点，1维输出
+    bp->setLayerSizes(layers_size);
 
-    double **input_weights;
-    double **hidden_weights;
-
-    double **input_prev_weights;
-    double **hidden_prev_weights;
-    double eta;
-    double momentum;
-
-public:
-    CBPNN() {
-        int i, j;
-        input_n = INPUT_N;
-        hidden_n = HIDDEN_N;
-        output_n = OUTPUT_N;
-
-
-        input_units = new double[input_n + 1];
-        hidden_units = new double[hidden_n + 1];
-        output_units = new double[output_n + 1];
-
-
-        hidden_delta = new double[hidden_n + 1];
-        output_delta = new double[output_n + 1];
-
-        target = new double[output_n + 1];
-
-        input_weights = new double *[input_n + 1];
-        for (i = 0; i < input_n + 1; i++)
-            input_weights[i] = new double[hidden_n + 1];
-        hidden_weights = new double *[hidden_n + 1];
-        for (i = 0; i < hidden_n + 1; i++)
-            hidden_weights[i] = new double[output_n + 1];
-
-        input_prev_weights = new double *[input_n + 1];
-        for (i = 0; i < input_n + 1; i++)
-            input_prev_weights[i] = new double[hidden_n + 1];
-        for (i = 0; i < input_n + 1; i++)
-            for (j = 0; j < hidden_n + 1; j++)
-                input_prev_weights[i][j] = 0.0;
-        hidden_prev_weights = new double *[hidden_n + 1];
-        for (i = 0; i < hidden_n + 1; i++)
-            hidden_prev_weights[i] = new double[output_n + 1];
-        for (i = 0; i < hidden_n + 1; i++)
-            for (j = 0; j < output_n; j++)
-                hidden_prev_weights[i][j] = 0.0;
-        hidden_units[0] = 1.0;
-        input_units[0] = 1.0;
-        eta = 0.3;
-        momentum = 0.3;
+    bp->setTrainMethod(ml::ANN_MLP::BACKPROP, 0.1, 0.1);
+    bp->setActivationFunction(ml::ANN_MLP::SIGMOID_SYM);
+    bp->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER, 10000, /*FLT_EPSILON*/1e-6));
+    // 保存训练好的神经网络参数
+    bool trained = bp->train(train_data_mat, ml::ROW_SAMPLE, labels_mat);
+    if (trained) {
+        bp->save("bp_param");
     }
 
-    void initSeed() {
-        srand(time(NULL));
-    }
+    // 创建训练好的神经网络
+//    Ptr<ml::ANN_MLP> bp = ml::ANN_MLP::load("bp_param");
 
-    void initWeights()   //初始化weights
-    {
-        int i, j;
-        initSeed();
-        for (i = 0; i < input_n + 1; i++)
-            for (j = 1; j <= hidden_n; j++)
-                input_weights[i][j] = (double) (rand()) / (32767 / 2) - 1;
-        for (i = 0; i < hidden_n + 1; i++)
-            for (j = 1; j <= output_n; j++)
-                hidden_weights[i][j] = (double) (rand()) / (32767 / 2) - 1;
-    }
-
-    void saveWeights()   //保存weights
-    {
-        int i, j;
-        fstream file_out;
-        file_out.open("input_weights_data.txt", ios::out);
-        if (!file_out.is_open())
-            exit(-1);
-        for (i = 0; i < input_n + 1; i++)
-            for (j = 1; j <= hidden_n; j++)
-                file_out << input_weights[i][j] << endl;
-        file_out.close();
-        file_out.open("hidden_weights_data.txt", ios::out);
-        if (!file_out.is_open())
-            exit(-1);
-        for (i = 0; i < hidden_n + 1; i++)
-            for (j = 1; j <= output_n; j++)
-                file_out << hidden_weights[i][j] << endl;
-        file_out.close();
-    }
-
-    void readData() {
-        int K = 10;
-        while (K-- > 0) {
-            double Etotal = 0.0;
-            fstream file_in;
-            file_in.open("../verification_code_dataset/data_train.txt");
-            std::string s;
-            for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
-                int data[10];
-                std::string imageName;
-                file_in >> imageName;
-                for (int j = 0; j < 10; j++)
-                    file_in >> data[j];
-                Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
-                Pretreatment(mat);
-                std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
-                std::size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
-                if (size != 10)
-                    continue;
-                for (int j = 0; j < size; j++) {
-                    Mat trainMat = splitMats[j].clone();
-                    resize(trainMat, trainMat, Size(28, 28));
-                    for (int k = 1; k <= 28; k++) {
-                        for (int kk = 1; kk <= 28; kk++) {
-                            input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
-                        }
-                    }
-                    target[data[j] + 1] = 1;
-                    layerForward();     //前项传播
-                    Etotal += getOutputError();   //计算总的误差
-                    getHiddenError();   //计算中间层误差
-                    adjustWeights();    //反向传播调节
-                    target[data[j] + 1] = 0;
-                }
+    // 显示分类的结果
+    Vec3b green(0, 255, 0), blue(255, 0, 0);
+    for (auto i = 0; i < img.rows; ++i) {
+        for (auto j = 0; j < img.cols; ++j) {
+            Mat sample_mat = (Mat_<float>(1, 2) << j, i);
+            Mat response_mat;
+            bp->predict(sample_mat, response_mat);
+            float response = response_mat.ptr<float>(0)[0];
+            if (response > 0.5) {
+                img.at<Vec3b>(i, j) = green;
+            } else if (response < 0.5) {
+                img.at<Vec3b>(i, j) = blue;
             }
-            file_in.close();
-            cout << 50 - K << ": " << Etotal << endl;
         }
     }
 
-    void readWeights() //读取weights
-    {
-        int i, j;
-        fstream file_in;
-        file_in.open("input_weights_data.txt", ios::in);
-        if (!file_in.is_open())
-            exit(-1);
-        for (i = 0; i < input_n + 1; i++)
-            for (j = 1; j <= hidden_n; j++)
-                file_in >> input_weights[i][j];
-        file_in.close();
-        file_in.open("hidden_weights_data.txt", ios::in);
-        if (!file_in.is_open())
-            exit(-1);
-        for (i = 0; i < hidden_n + 1; i++)
-            for (j = 1; j <= output_n; j++)
-                file_in >> hidden_weights[i][j];
-        file_in.close();
-    }
+    // 画出训练样本数据
+    int thickness = -1;
+    int lineType = 8;
+    circle(img, Point(500, 60), 5, Scalar(255, 255, 255), thickness, lineType);
+    circle(img, Point(245, 40), 5, Scalar(255, 255, 255), thickness, lineType);
+    circle(img, Point(480, 250), 5, Scalar(255, 255, 255), thickness, lineType);
+    circle(img, Point(160, 380), 5, Scalar(0, 0, 255), thickness, lineType);
+    circle(img, Point(400, 25), 5, Scalar(255, 255, 255), thickness, lineType);
+    circle(img, Point(55, 400), 5, Scalar(0, 0, 255), thickness, lineType);
 
-    //sigmod激活函数
-    double sigmoidal(double x) {
-        return 1 / (1 + exp(-x));
-    }
+    imwrite("result.png", img);        // 保存训练的结果
+    imshow("BP Simple Example", img);
 
-    //前向传播
-    void layerForward() {
-        int i, j;
-        double temp;
-        for (i = 1; i <= hidden_n; i++)//input->hidden
-        {
-            temp = 0.0;
-            for (j = 0; j <= input_n; j++)
-                temp += input_units[j] * input_weights[j][i];
-            hidden_units[i] = sigmoidal(temp);
-        }
-        for (i = 1; i <= output_n; i++)//hidden->out
-        {
-            temp = 0.0;
-            for (j = 0; j <= hidden_n; j++)
-                temp += hidden_units[j] * hidden_weights[j][i];
-            output_units[i] = sigmoidal(temp);
-        }
-    }
+    waitKey(0);
+}
 
-    double getOutputError() {
-        int i;
-        double Etotal = 0.0;  //calculate the error
-        for (i = 1; i <= output_n; i++) {
-            output_delta[i] = output_units[i] * (1.0 - output_units[i]) * (target[i] - output_units[i]);
-            Etotal += fabs(output_delta[i]);
-        }
-        return Etotal;
-    }
-
-    double getHiddenError() {
-        int i, j;
-        double Etotal = 0.0;
-        for (i = 1; i <= hidden_n; i++) {
-            double temp = 0.0;
-            for (j = 1; j <= output_n; j++)
-                temp += output_delta[j] * hidden_weights[i][j];
-            hidden_delta[i] = hidden_units[i] * (1.0 - hidden_units[i]) * temp;
-            Etotal += fabs(hidden_delta[i]);
-        }
-        return Etotal;
-    }
-
-    void adjustWeights() {
-        int i, j;
-        for (i = 0; i < hidden_n + 1; i++)             //out->hidden
-            for (j = 1; j <= output_n; j++) {
-                hidden_weights[i][j] += eta * output_delta[j] * hidden_units[i] + momentum * hidden_prev_weights[i][j];
-                hidden_prev_weights[i][j] =
-                        eta * output_delta[j] * hidden_units[i] + momentum * hidden_prev_weights[i][j];
-            }
-        for (i = 0; i <= input_n; i++)
-            for (j = 1; j <= hidden_n; j++)    //hidden->input
-            {
-                input_weights[i][j] += eta * hidden_delta[j] * input_units[i] + momentum * input_prev_weights[i][j];
-                input_prev_weights[i][j] = eta * hidden_delta[j] * input_units[i] + momentum * input_prev_weights[i][j];
-            }
-    }
-
-    void test() {
-        int sum_correct;
-        fstream file_in;
-        file_in.open("../verification_code_dataset/data_train.txt");
-        std::string s;
-        for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
-            int data[10];
-            std::string imageName;
-            file_in >> imageName;
-            string correct;
-            string predict;
-            for (int j = 0; j < 10; j++) {
-                file_in >> data[j];
-                correct.push_back(letters[data[j]]);
-            }
-
-            Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
-            Pretreatment(mat);
-            std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
-            std::size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
-            for (int j = 0; j < size; j++) {
-                Mat trainMat = splitMats[j].clone();
-                resize(trainMat, trainMat, Size(28, 28));
-                for (int k = 1; k <= 28; k++) {
-                    for (int kk = 1; kk <= 28; kk++) {
-                        input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
-                    }
-                }
-                layerForward();     //前项传播
-                int index = 1;
-                double max_num = output_units[1];        //找到输出层数组元素最接近1的元素位置作为目标输出
-                for (int kk = 1; kk <= output_n; kk++)
-                    if (max_num < output_units[kk]) {
-                        max_num = output_units[kk];
-                        index = kk;
-                    }
-                predict.push_back(letters[index - 1]);
-            }
-            cout << correct << "\t" << predict << endl;
-            int c = lcs(correct, predict, correct.length(), predict.length());
-            sum_correct += c;
-        }
-        file_in.close();
-        std::cout << "正确率：" << sum_correct * 1.0 / (4000 * 10) << std::endl;
-    }
-
-    void test(Mat &mat) {
-        imshow("原始图像",mat);
-        string predict;
+//分割字符到文件夹分类
+void SplitCharToFile() {
+    int charSize[charLength] = {0};
+    fstream file_in;
+    file_in.open("../verification_code_dataset/data_train.txt");
+    for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
+        int data[10];
+        string imageName;
+        file_in >> imageName;
+        for (int j = 0; j < 10; j++)
+            file_in >> data[j];
+        Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
         Pretreatment(mat);
-        std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
-        std::size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
+        vector<Mat> splitMats = SplitLetterAndDigit(mat);
+        size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
+        if (size != 10)
+            continue;
         for (int j = 0; j < size; j++) {
             Mat trainMat = splitMats[j].clone();
             resize(trainMat, trainMat, Size(28, 28));
-            for (int k = 1; k <= 28; k++) {
-                for (int kk = 1; kk <= 28; kk++) {
-                    input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
-                }
+            string fileName = "D:/shuqy-package/OperatingSystem/digital-letter-verification-code-recognition/verification_code_dataset/Split/";
+            char c = letters[data[j]];
+            if (isupper(c)) {
+                fileName.push_back('-');
+                fileName.push_back(c);
+            } else {
+                fileName.push_back(c);
             }
-            layerForward();     //前项传播
-            int index = 1;
-            double max_num = output_units[1];        //找到输出层数组元素最接近1的元素位置作为目标输出
-            for (int kk = 1; kk <= output_n; kk++)
-                if (max_num < output_units[kk]) {
-                    max_num = output_units[kk];
-                    index = kk;
-                }
-            predict.push_back(letters[index - 1]);
+            fileName.push_back('/');
+            fileName.append(to_string(charSize[data[j]]++) + ".jpg");
+            imwrite(fileName, trainMat);
         }
-        std::cout << "result: " << predict << std::endl;
+        cout << imageName + "OK!" << endl;
     }
+    for (size_t i = 0; i < letters.length(); i++) {
+        cout << charSize[i] << " ";
+    }
+    cout << endl;
+    file_in.close();
+}
 
-    ~CBPNN() {
-        int i;
-//        delete[]input_units;
-//        delete[]hidden_units;
-//        delete[]output_units;
-//
-//        delete[]hidden_delta;
-//        delete[]output_delta;
-//
-//        delete[]target;
-//
-//        for (i = 0; i < input_n + 1; i++)
-//            delete[]input_weights[i];
-//        delete[]input_weights;
-//
-//        for (i = 0; i < hidden_n + 1; i++)
-//            delete[]hidden_weights[i];
-//        delete[]hidden_weights;
-//
-//        for (i = 0; i < input_n + 1; i++)
-//            delete[]input_prev_weights[i];
-//        delete[]input_prev_weights;
-//        for (i = 0; i < hidden_n + 1; i++)
-//            delete[]hidden_prev_weights[i];
-//        delete[]hidden_prev_weights;
+//创建训练数据
+void createTrainMat(Mat &train_data_mat, Mat &labels_mat) {
+    size_t imageSize = 0;
+    for (int i:imageNums) {
+        imageSize += i;
     }
-};
+    size_t currentImageIndex = 0;
+    train_data_mat = Mat(imageSize, 28 * 28, CV_32FC1);
+    labels_mat = Mat::zeros(imageSize, 62, CV_32FC1);
+    fstream file_in;
+    file_in.open("../verification_code_dataset/data_train.txt");
+    for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
+        int data[10];
+        string imageName;
+        file_in >> imageName;
+        for (int j = 0; j < 10; j++)
+            file_in >> data[j];
+        Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
+        //预处理
+        Pretreatment(mat);
+        vector<Mat> splitMats = SplitLetterAndDigit(mat);
+        size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
+        if (size != 10)
+            continue;
+        for (int j = 0; j < size; j++, currentImageIndex++) {
+            Mat trainMat = splitMats[j].clone();
+            resize(trainMat, trainMat, Size(28, 28));
+            trainMat.convertTo(trainMat, CV_32FC1, 1.0 / 255.0);
+            //训练数据
+            for (int ii = 0; ii < 28; ii++)
+                for (int jj = 0; jj < 28; jj++) {
+                    train_data_mat.at<float>(currentImageIndex, ii * 28 + jj) = trainMat.at<float>(ii, jj);
+                }
+            //label数据
+            labels_mat.at<float>(currentImageIndex, data[j]) = 1.0;
+        }
+    }
+    file_in.close();
+}
+
+//开始训练
+void MyTrain() {
+    Mat train_data_mat;
+    Mat labels_mat;
+    createTrainMat(train_data_mat, labels_mat);
+
+    // BP 模型创建和参数设置
+    Ptr<ml::ANN_MLP> bp = ml::ANN_MLP::create();
+    //784*128*62
+    Mat layers_size = (Mat_<int>(1, 3) << INPUT_N, HIDDEN_N, OUTPUT_N);
+    bp->setLayerSizes(layers_size);
+    //SIGMOD函数激活
+    bp->setActivationFunction(ml::ANN_MLP::ActivationFunctions::SIGMOID_SYM);
+    bp->setTrainMethod(ml::ANN_MLP::BACKPROP, 0.05, 0.05);
+    bp->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER | TermCriteria::EPS, 100, /*FLT_EPSILON*/ 0.0001));
+    // 保存训练好的神经网络参数
+    bool trained = bp->train(train_data_mat, ml::ROW_SAMPLE, labels_mat);
+    if (trained) {
+        bp->save("bp_param");
+    }
+}
+
+//预测一张验证码数据
+void Predict(Mat &mat) {
+    Ptr<ml::ANN_MLP> bp = ml::ANN_MLP::load("bp_param");
+    Pretreatment(mat);
+    vector<Mat> mats = SplitLetterAndDigit(mat);
+    Mat result;
+    for (Mat &_mat:mats) {
+        //调整大小到28*28
+        resize(_mat, _mat, Size(28, 28));
+        _mat.convertTo(_mat, CV_32FC1, 1.0 / 255);
+        //将28*28的图像转化为1*(28*28)，准备Predict预测操作
+        Mat A_mat(1, _mat.rows * _mat.cols, CV_32FC1);
+        for (int i = 0; i < _mat.rows; i++)
+            for (int j = 0; j < _mat.cols; j++) {
+                A_mat.at<float>(0, i * _mat.rows + j) = _mat.at<float>(i, j);
+            }
+        bp->predict(A_mat, result);
+        //找到最大值的位置
+        Point maxLoc;
+        //将该字符分类给该标签的置信值
+        double maxVal = 0;
+        minMaxLoc(result, nullptr, &maxVal, nullptr, &maxLoc);
+        cout << "标签位置：" << maxLoc << " 字符: " << letters[maxLoc.x] << " 置信值: " << maxVal << endl;
+    }
+}
+
+//预测所有的验证码数据，并计算正确率
+void Predict() {
+    size_t correct = 0;
+    Ptr<ml::ANN_MLP> bp = ml::ANN_MLP::load("bp_param");
+    fstream file_in;
+    file_in.open("../verification_code_dataset/data_train.txt");
+    for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
+        int data[10];
+        string imageName;
+        //真实的结果
+        string offer;
+        file_in >> imageName;
+        for (int j = 0; j < 10; j++) {
+            file_in >> data[j];
+            offer.push_back(letters[data[j]]);
+        }
+        Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
+        Pretreatment(mat);
+        vector<Mat> splitMats = SplitLetterAndDigit(mat);
+        size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
+        //预测的结果
+        string predict;
+        for (int j = 0; j < size; j++) {
+            Mat trainMat = splitMats[j].clone();
+            resize(trainMat, trainMat, Size(28, 28));
+            trainMat.convertTo(trainMat, CV_32FC1, 1.0 / 255.0);
+            //生成训练的1*(28*28)数据
+            Mat A_mat(1, trainMat.rows * trainMat.cols, CV_32FC1);
+            for (int ii = 0; ii < trainMat.rows; ii++)
+                for (int jj = 0; jj < trainMat.cols; jj++) {
+                    A_mat.at<float>(0, ii * trainMat.rows + jj) = trainMat.at<float>(ii, jj);
+                }
+            Mat result;
+            //预测
+            bp->predict(A_mat, result);
+            Point maxLoc;
+            double maxVal = 0;
+            minMaxLoc(result, nullptr, &maxVal, nullptr, &maxLoc);
+            predict.push_back(letters[maxLoc.x]);
+        }
+        cout << imageName << "\t原始数据:" + offer << "\t预测数据:" << predict << endl;
+        correct += lcs(offer, predict, offer.length(), predict.length());
+    }
+    //正确率
+    cout << "correct rate: " << correct * 1.0 / (1000 * 10) << endl;
+    file_in.close();
+}
 
 int main() {
-    short scalar[3][3] = {
-            {0,  -1, 0},
-            {-1, 5,  -1},
-            {0,  -1, 0}
-    };
-    for (int i = 0; i < 3; i++)
-        for (int j = 0; j < 3; j++)
-            Kernel.at<short>(i, j) = scalar[i][j];
-    Mat mat=imread("../verification_code_dataset/train_images/1591854438_2914968.jpg",CV_8UC1);
-    CBPNN BPNN;
-    //BPNN.initWeights();
-    BPNN.readWeights();
-    //BPNN.readData();            //读取数据 同时进行前项传播，反向传播，调节weights
-    //BPNN.saveWeights();          //训练完成 保存weights数据
-    BPNN.test(mat);                 //进行正确率测试
+    //SplitCharToFile();
+    //MyTrain();
+    Mat mat = imread("../verification_code_dataset/train_images/3.jpg", CV_8UC1);
+    imshow("mat", mat);
+    Predict(mat);
     waitKey(0);
     return 0;
 }

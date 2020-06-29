@@ -19,8 +19,9 @@
 
 [参考文献](#参考文献) 
 
+
 # 一、介绍
-给定4000个验证码数据，每个验证码数据由10个数字或者字母组成，字母区分大小写，编写一个判别器，将这4000个验证码数据进行输入训练后，能完成基本的验证码识别工作。如下图所示能够正确的判别验证码内的数据：
+给定1000个验证码数据，每个验证码数据由10个数字或者字母组成，字母区分大小写，编写一个判别器，将这1000个验证码数据进行输入训练后，能完成基本的验证码识别工作。如下图所示能够正确的判别验证码内的数据：
 
 ![](https://i.niupic.com/images/2020/06/24/8jlH.png)
 
@@ -281,36 +282,12 @@ BP（Back Propagation）神经网络主要分为两个过程：工作信号正�
 
 其中w为权重，b为偏置值。
 
-然后再使用激活函数进行激活，我们这里选择的激活函数是Sigmod，公式计算如下
-
-![](https://math.jianshu.com/math?formula=f(x)%3d%5cfrac%7b1%7d%7b1%2be%5e%7b-x%7d%7d)
-
-正向传播就是输入数据经过一层一层的神经元运算、输出的过程，最后一层输出值作为算法预测值y'。在代码内的实现如下：
+然后再使用激活函数进行激活，我们这里选择的激活函数是Sigmod，在OpenCV内的设置参数为
 ```C++
-//sigmod激活函数
-double sigmoidal(double x) {
-    return 1 / (1 + exp(-x));
-}
-//前向传播
-void layerForward() {
-    int i, j;
-    double temp;
-    for (i = 1; i <= hidden_n; i++)//input->hidden
-    {
-        temp = 0.0;
-        for (j = 0; j <= input_n; j++)
-            temp += input_units[j] * input_weights[j][i];
-        hidden_units[i] = sigmoidal(temp);
-    }
-    for (i = 1; i <= output_n; i++)//hidden->out
-    {
-        temp = 0.0;
-        for (j = 0; j <= hidden_n; j++)
-            temp += hidden_units[j] * hidden_weights[j][i];
-        output_units[i] = sigmoidal(temp);
-    }
-}
+bp->setActivationFunction(ml::ANN_MLP::ActivationFunctions::SIGMOID_SYM);
 ```
+
+正向传播就是输入数据经过一层一层的神经元运算、输出的过程，最后一层输出值作为算法预测值y'。
 ### 反向传播
 反向传播的过程其实就是进行修正我们之前的权重。具体的公式计算步骤如下：
 1. 先计算损失函数L(y',y)：
@@ -323,107 +300,131 @@ void layerForward() {
 
 其中这里的α是梯度下降学习率。
 
-反应到代码内的计算过程如下：
+然后我们进行训练时就读入`data_train.txt`，然后对每一张图像都进行之前的图像分割，然后对每个分割后的字符数字进行前向传播和反向传播调整权值。
+我们使用的OpenCV内自带的ANN_MLP神经网络，其中一些参数的设置的代码如下：
 ```C++
-//反向传播调节权重
-void adjustWeights() {
-    int i, j;
-    for (i = 0; i < hidden_n + 1; i++)             //out->hidden
-        for (j = 1; j <= output_n; j++) {
-            hidden_weights[i][j] += eta * output_delta[j] * hidden_units[i] + momentum * hidden_prev_weights[i][j];
-            hidden_prev_weights[i][j] =
-                    eta * output_delta[j] * hidden_units[i] + momentum * hidden_prev_weights[i][j];
-        }
-    for (i = 0; i <= input_n; i++)
-        for (j = 1; j <= hidden_n; j++)    //hidden->input
-        {
-            input_weights[i][j] += eta * hidden_delta[j] * input_units[i] + momentum * input_prev_weights[i][j];
-            input_prev_weights[i][j] = eta * hidden_delta[j] * input_units[i] + momentum * input_prev_weights[i][j];
-        }
+Mat train_data_mat;
+Mat labels_mat;
+createTrainMat(train_data_mat, labels_mat);
+
+// BP 模型创建和参数设置
+Ptr<ml::ANN_MLP> bp = ml::ANN_MLP::create();
+//784*128*62
+Mat layers_size = (Mat_<int>(1, 3) << INPUT_N, HIDDEN_N, OUTPUT_N);
+bp->setLayerSizes(layers_size);
+//SIGMOD函数激活
+bp->setActivationFunction(ml::ANN_MLP::ActivationFunctions::SIGMOID_SYM);
+bp->setTrainMethod(ml::ANN_MLP::BACKPROP, 0.05, 0.05);
+bp->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER | TermCriteria::EPS, 100, /*FLT_EPSILON*/ 0.0001));
+bool trained = bp->train(train_data_mat, ml::ROW_SAMPLE, labels_mat);
+// 保存训练好的神经网络参数
+if (trained) {
+    bp->save("bp_param");
 }
 ```
-然后我们进行训练时就读入`data_train.txt`，然后对每一张图像都进行之前的图像分割，然后对每个分割后的字符数字进行前向传播和反向传播调整权值。具体的训练的代码如下：
+其中最主要的是上述的`createTrainMat()`函数，为我们自己实现的创建训练数据和标签数据的函数，我们要将这1000张验证码的每个字符分割出来，然后重新调整大小到28*28，然后填入到`train_data_mat`矩阵内，而且还要将对应的标签数据填入到`labels_mat`矩阵内，具体的实现代码如下：
 ```C++
-double Etotal = 0.0;
+train_data_mat = Mat(imageSize, 28 * 28, CV_32FC1);
+labels_mat = Mat::zeros(imageSize, 62, CV_32FC1);
 fstream file_in;
 file_in.open("../verification_code_dataset/data_train.txt");
-std::string s;
-//4000个验证码数据
+//读入每组数据
 for (int i = 0; i < MAX_TRAIN_TIMES; i++) {
     int data[10];
     std::string imageName;
     file_in >> imageName;
-    //读入数据
     for (int j = 0; j < 10; j++)
         file_in >> data[j];
-    //读入图片
     Mat mat = imread("../verification_code_dataset/train_images/" + imageName, CV_8UC1);
     //预处理
     Pretreatment(mat);
-    //分割
+    //分割图像
     std::vector<Mat> splitMats = SplitLetterAndDigit(mat);
     std::size_t size = splitMats.size() == 10 ? 10 : splitMats.size();
+    //如果分割不好，这组数据就不要了
     if (size != 10)
         continue;
-    //对每个字符进行训练
-    for (int j = 0; j < size; j++) {
+    for (int j = 0; j < size; j++, currentImageIndex++) {
         Mat trainMat = splitMats[j].clone();
-        //resize到28*28
         resize(trainMat, trainMat, Size(28, 28));
-        for (int k = 1; k <= 28; k++) {
-            for (int kk = 1; kk <= 28; kk++) {
-                input_units[k * 28 + kk] = trainMat.at<uchar>(k - 1, kk - 1) / 255.0;
+        trainMat.convertTo(trainMat, CV_32FC1, 1.0 / 255.0);
+        //训练数据
+        for (int ii = 0; ii < 28; ii++)
+            for (int jj = 0; jj < 28; jj++) {
+                train_data_mat.at<float>(currentImageIndex, ii * 28 + jj) = trainMat.at<float>(ii, jj);
             }
-        }
-        target[data[j] + 1] = 1;
-        layerForward();     //前项传播
-        Etotal += getOutputError();   //计算总的误差
-        getHiddenError();   //计算中间层误差
-        adjustWeights();    //反向传播调节
-        target[data[j] + 1] = 0;
+        //label数据
+        labels_mat.at<float>(currentImageIndex, data[j]) = 1.0;
     }
 }
 file_in.close();
 ```
-我对这4000组数据训练了50次，最后基于BP神经网络的误差
+我们设置的训练结束条件为`bp->setTermCriteria(TermCriteria(TermCriteria::MAX_ITER | TermCriteria::EPS, 100, /*FLT_EPSILON*/ 0.0001));`，表示最多循环训练100次或者是基于BP神经网络的误差：
+
 
 ![](https://math.jianshu.com/math?formula=E_%7btotal%7d%3d%5csum%7b%5cfrac%7b1%7d%7b2%7d(target-output)%5e2%7d)
 
-降低到了300左右。我们在后续进行验证码识别的时候我们只需要和训练的过程类似，将该验证码分割成字符，然后对每个字符进行一次前向传播，然后找出输出层最大的那个位置，作为我们的输出结果。反应到代码内如下：
+降低到0.0001以内才结束，最后将结果保存在`bp_param`文件内。我们训练完成的部分文件信息如下：
+
+![](https://i.imgur.com/4tlAYsC.png)
+
+
+我们在后续进行验证码识别的时候我们只需要和训练的过程类似，将该验证码分割成字符，然后对每个字符进行一次前向传播，然后找出输出层最大的那个位置，作为我们的输出结果。在OpenCV内有专门的函数进行预测，为`Predict()`函数，具体反应到代码内如下：
 ```C++
-layerForward();
-int index = 1;
-double max_num = output_units[1];        //找到输出层数组元素最大的值的元素位置作为目标输出
-for (int i = 1; i <= output_n; i++)
-    if (max_num < output_units[i]) {
-        max_num = output_units[i];
-        index = i;
+//调整大小到28*28
+resize(_mat, _mat, Size(28, 28));
+_mat.convertTo(_mat, CV_32FC1, 1.0 / 255);
+//将28*28的图像转化为1*(28*28)，准备Predict预测操作
+Mat A_mat(1, _mat.rows * _mat.cols, CV_32FC1);
+for (int i = 0; i < _mat.rows; i++)
+    for (int j = 0; j < _mat.cols; j++) {
+        A_mat.at<float>(0, i * _mat.rows + j) = _mat.at<float>(i, j);
     }
-//输出结果
-std::cout << letters[index - 1] << " ";
+bp->predict(A_mat, result);
+//找到最大值的位置
+Point maxLoc;
+//将该字符分类给该标签的置信值
+double maxVal = 0;
+minMaxLoc(result, nullptr, &maxVal, nullptr, &maxLoc);
+std::cout << maxLoc << " " << letters[maxLoc.x] << " " << maxVal << endl;
 ```
 # 四、项目结果
 我们将四种不同类型的验证码都测试一下识别效果：
 
-![](https://i.niupic.com/images/2020/06/25/8jDZ.png)
+![](https://i.imgur.com/LrYLzOb.png)
 
-原始未经过处理的验证码（f识别成了T，小写z识别成了Z，F识别成了m）
+原始未经过处理的验证码（0.jpg，全部识别正确）
 
-![](https://i.niupic.com/images/2020/06/25/8jDX.png)
+![](https://i.imgur.com/Ojzrbf3.png)
 
-经过模糊化处理的验证码（O识别成了U，后面几个都错了）
+经过模糊化处理的验证码（2.jpg，g识别成了i，E识别成了W，m识别成了T，其他均正确）
 
-![](https://i.niupic.com/images/2020/06/25/8jEf.png)
+![](https://i.imgur.com/Hah9uQ9.png)
 
-加入噪声的验证码，好像大部分都错了
+加入噪声的验证码（1.jpg，6识别成了e，7识别成了h，其他均正确）
 
-![](https://i.niupic.com/images/2020/06/25/8jEj.png)
+![](https://i.imgur.com/rO6h3Zd.png)
 
-加入模糊化和噪声的验证码，好像也是大部分都错了
+加入模糊化和噪声的验证码（3.jpg，这个效果就比较差了，好像只识别对了一个w）
 
-最后测得本次所有的4000个验证码，一共40000个字符，识别率大致在60%左右，其中大部分问题出在字符的大小写问题以及同时经过模糊化和噪声处理的图像，这种情况下误识别率还是挺高的。
 
-现在行业内大致有这几种验证码识别的方法：
+最后测得本次所有的1000个验证码，一共10000个字符，识别率大致在70%左右，其中大部分问题出在同时经过模糊化和噪声处理的图像，其他三种情况下误识别率还是挺高的，像一些没有经过任何处理的验证码的基本能全部识别对。
+
+而且`bp->setTrainMethod(ml::ANN_MLP::BACKPROP, 0.05, 0.05);`内的后面两个参数对我们的结果的影响也比较大，这两个参数对应的是OpenCV内的神经网络的激活函数：
+
+![](https://math.jianshu.com/math?formula=f(x)%3d%5cbeta+%5cfrac%7b1-e%5e%7b-%5calpha+x%7d%7d%7b1%2be%5e%7b-%5calpha+x%7d%7d)
+
+我们这里不能将这两个参数设置的过大，过大的话会产生梯度爆炸的情况，即后续训练出来的参数都很大或者是NaN，INF等数据。这里我测试了几个数据：
+
+| α与β的取值 | 最后的识别率 |
+| :--- | :----: |
+| α=β=1.0 | ----（梯度爆炸）|
+| α=β=0.01 | 68.31%|
+| α=β=0.07 | 58.07%|
+| α=β=0.05 | 70.03%(目前效果最好)|
+| α=β=0.01 | 68.31%|
+
+而现在行业内大致有这几种验证码识别的方法：
 1. OCR软件，OCR识别引擎Tesseract
    该方法的优点是：开发量少；比较通用，适合于各种变形较少的验证码；对于扭曲不严重的字母和数字识别率高。缺点也很明显：对于扭曲的字母和数字识别率大大降低；对于字符间有粘连的验证码几乎难以正确识别；很难针对特定网站的验证码做定制开发。 
 2. 模板库匹配
@@ -433,8 +434,12 @@ std::cout << letters[index - 1] << " ";
 4. 神经网络  
    以上验证码识别都依赖于字符切分，切分的好坏几乎直接决定识别的准确程度。而对于有字符粘连的图片，往往识别率就会低很多。目前验证码识别最先进的是谷歌在识别“街景”图像中门牌号码中使用的一套的算法。该算法采用一种“深度卷积神经网络”（deep convolutional neural network）方法进行识别，准确率可以达到99%以上。
 
+所以看起来自己的验证码识别和这些顶尖的二维码识相比较，识别率还是相差很多的，希望以后慢慢进行调整。
+
 # 五、项目总结
-自己的验证码识别和这些顶尖的二维码识相比较，技术和识别率还是相差很多的，问题主要出在BP神经网络好像不能很好的判断字母的大小，以及如果有噪声加入的话，效果也会很差，以后改进的话就不使用BP神经网络了，改用其他效果比较好的神经网络，可能最后的测试结果也会好很多。
+从上面可以看到，我们自己的验证码识别和这些顶尖的二维码识相比较，技术和识别率还是相差很多的，问题主要出在经过添加噪声和进行模糊处理的验证码在字符分割的情况下存在一定的困难，所以以后改进的话主要有几个方面：
+1. 第三个方向就是找一些更加好的算法来进行图像的降噪与分割，因为这个算法可以看到识别的神经网络是没有问题的，最主要的问题出现在经过添加噪声和进行模糊处理的验证码在分割的情况下存在困难，以后可能能去训练一个神经网络去专门进行图像字符的分割。
+2. 第二个改进方面是前面提到的两个参数α与β，暂时只是测试了那四组数据，后续可以试着寻找更加精细的数据，或者是α与β不相等的情况下会不会有更优解，这也是一个方向。
 
 Github链接：[https://github.com/MyLovePoppet/digital_letter_verification_code_recognition](https://github.com/MyLovePoppet/digital_letter_verification_code_recognition)
 # 参考文献
@@ -445,4 +450,6 @@ Github链接：[https://github.com/MyLovePoppet/digital_letter_verification_code
 [2].常用验证码的识别方法-网易云社区
 [https://juejin.im/post/5bea7d786fb9a049b77fe6f2](https://juejin.im/post/5bea7d786fb9a049b77fe6f2)
 
-[3].Python3 识别验证码（opencv-python）-整合侠[https://www.cnblogs.com/lizm166/p/9969647.html](https://www.cnblogs.com/lizm166/p/9969647.html)
+[3].Python3 识别验证码（opencv-python-整合侠[https://www.cnblogs.com/lizm166/p/9969647.html](https://www.cnblogs.com/lizm166/p/9969647.html)
+
+[4].OpenCV之神经网络 (一)-潍县萧萧竹[https://www.cnblogs.com/xinxue/p/5789421.html](https://www.cnblogs.com/xinxue/p/5789421.html)
